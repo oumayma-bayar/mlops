@@ -17,7 +17,7 @@ from sklearn.metrics import (
     f1_score,
 )
 
-
+mlflow.set_tracking_uri("sqlite:///mlflow.db")
 # ============================================================
 # 2. CHARGER LES DONNÉES
 # ============================================================
@@ -116,11 +116,14 @@ def lancer_essai(nom, n_estimators, max_depth, colonnes):
         # Enregistrer le modèle comme artefact
         # ----------------------------------------------------
 
+        
+# Enregistrer le modèle comme artefact classique MLflow
         mlflow.sklearn.log_model(
             sk_model=model,
-            name="model",
-            serialization_format="cloudpickle",
+            artifact_path="model",
+            serialization_format="cloudpickle"
         )
+
 
         # Afficher les résultats
         print(

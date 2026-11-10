@@ -1,126 +1,140 @@
 
-# ============================================================
-# 1. IMPORTER LES BIBLIOTHÈQUES
-# ============================================================
-
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 from typing import Literal
-
-import mlflow
-import mlflow.sklearn
 import pandas as pd
+import joblib
+import os
 
-from fastapi import FastAPI
-from pydantic import BaseModel
-
-
-# ============================================================
-# 2. CRÉER L'APPLICATION FASTAPI
-# ============================================================
+# --------------------------------------------------
+# 1. Initialisation de FastAPI
+# --------------------------------------------------
 
 app = FastAPI(
-    title="API Churn",
-    description="API de prédiction du départ des clients",
+    title="API Churn Prediction",
+    description="API pour prédire si un client risque de quitter l'entreprise",
     version="1.0.0"
 )
 
+# --------------------------------------------------
+# 2. Chargement du modèle
+# --------------------------------------------------
 
-# ============================================================
-# 3. CONFIGURER MLFLOW ET CHARGER LE MODÈLE CHAMPION
-# ============================================================
-
-# Utiliser la base SQLite du projet
-mlflow.set_tracking_uri("sqlite:///mlflow.db")
-
-# Charger le modèle une seule fois au démarrage
-model = mlflow.sklearn.load_model(
-    "models:/churn-model@champion"
+MODEL_PATH = os.path.join(
+    os.path.dirname(__file__),
+    "model",
+    "model.pkl"
 )
 
-print("Modèle chargé :", type(model).__name__)
+try:
+    model = joblib.load(MODEL_PATH)
+    print("Modèle chargé avec succès !")
+except Exception as e:
+    raise RuntimeError(f"Erreur lors du chargement du modèle : {e}")
 
 
-# ============================================================
-# 4. DÉFINIR LE FORMAT DES DONNÉES DU CLIENT
-# ============================================================
+# --------------------------------------------------
+# 3. Schéma des données d'entrée
+# --------------------------------------------------
 
-class Client(BaseModel):
-    age: int
-
-    salaire: float
-
-    abonnement: Literal[
-        "Basique",
-        "Standard",
-        "Premium"
-    ]
-
-    anciennete: float
-
-    consommation: float
+class ClientData(BaseModel):
+    age: int = Field(..., ge=18, le=100)
+    abonnement: Literal["Basique", "Standard", "Premium"]
+    anciennete: float = Field(..., ge=0)
+    consommation: float = Field(..., ge=0)
 
 
-# ============================================================
-# 5. ROUTE GET /health : VÉRIFIER L'ÉTAT DE L'API
-# ============================================================
+# --------------------------------------------------
+# 4. Route d'accueil
+# --------------------------------------------------
+
+@app.get("/")
+def home():
+    return {
+        "message": "Bienvenue dans l'API Churn Prediction",
+        "documentation": "/docs"
+    }
+
+
+# --------------------------------------------------
+# 5. Vérification de l'état de l'API
+# --------------------------------------------------
 
 @app.get("/health")
 def health():
     return {
-        "status": "ok"
+        "status": "OK",
+        "model_loaded": model is not None
     }
 
 
-# ============================================================
-# 6. ROUTE POST /predict : PRÉDIRE LE CHURN
-# ============================================================
+# --------------------------------------------------
+# 6. Préparation des données
+# --------------------------------------------------
+
+def prepare_data(client: ClientData):
+
+    # Convertir les données en DataFrame
+    data = pd.DataFrame([{
+        "age": client.age,
+        "abonnement": client.abonnement,
+        "anciennete": client.anciennete,
+        "consommation": client.consommation
+    }])
+
+    # IMPORTANT :
+    # Le modèle attend exactement les colonnes utilisées
+    # pendant son entraînement.
+    expected_columns = list(model.feature_names_in_)
+
+    # Encodage de l'abonnement
+    # À adapter si l'entraînement utilisait un autre encodage.
+    abonnement_mapping = {
+        "Basique": 0,
+        "Standard": 1,
+        "Premium": 2
+    }
+
+    data["abonnement"] = data["abonnement"].map(abonnement_mapping)
+
+    # Réorganiser les colonnes selon le modèle
+    data = data[expected_columns]
+
+    return data
+
+
+# --------------------------------------------------
+# 7. Prédiction du churn
+# --------------------------------------------------
 
 @app.post("/predict")
-def predict(client: Client):
+def predict(client: ClientData):
 
-    # --------------------------------------------------------
-    # a) Convertir les données reçues en DataFrame
-    # --------------------------------------------------------
+    try:
+        # Préparer les données
+        data = prepare_data(client)
 
-    ligne = pd.DataFrame([
-        client.model_dump()
-    ])
+        # Faire la prédiction
+        prediction = model.predict(data)[0]
 
+        # Probabilité si le modèle la prend en charge
+        probability = None
 
-    # --------------------------------------------------------
-    # b) Encoder la variable catégorielle abonnement
-    # --------------------------------------------------------
+        if hasattr(model, "predict_proba"):
+            probabilities = model.predict_proba(data)[0]
+            probability = float(probabilities[1])
 
-    ligne = pd.get_dummies(ligne)
+        # Résultat
+        resultat = "Client susceptible de quitter" if int(prediction) == 1 else "Client fidèle"
 
+        return {
+            "prediction": int(prediction),
+            "resultat": resultat,
+            "probabilite_churn": probability
+        }
 
-    # --------------------------------------------------------
-    # c) Adapter les colonnes aux attentes du modèle
-    # --------------------------------------------------------
-
-    ligne = ligne.reindex(
-        columns=model.feature_names_in_,
-        fill_value=0
-    )
-
-
-    # --------------------------------------------------------
-    # d) Effectuer la prédiction
-    # --------------------------------------------------------
-
-    resultat = int(
-        model.predict(ligne)[0]
-    )
-
-
-    # --------------------------------------------------------
-    # e) Retourner le résultat au format JSON
-    # --------------------------------------------------------
-
-    return {
-        "churn": resultat,
-        "message": (
-            "Le client va partir"
-            if resultat == 1
-            else "Le client reste"
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erreur pendant la prédiction : {str(e)}"
         )
-    }

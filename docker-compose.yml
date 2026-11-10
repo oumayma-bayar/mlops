@@ -1,0 +1,56 @@
+
+# Deux services : MLflow et API Churn
+services:
+
+  # -----------------------------------------
+  # SERVICE 1 : Serveur MLflow
+  # Tracking + Model Registry
+  # -----------------------------------------
+  mlflow:
+    # Image officielle MLflow
+    image: ghcr.io/mlflow/mlflow:v3.17.1
+
+    # Commande de démarrage
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --artifacts-destination /mlflow/artifacts
+
+    # Interface MLflow
+    ports:
+      - "5000:5000"
+
+    # Volume persistant
+    volumes:
+      - mlflow-data:/mlflow
+
+  # -----------------------------------------
+  # SERVICE 2 : API FastAPI
+  # -----------------------------------------
+  api:
+    # Construire l'image depuis le Dockerfile
+    build: .
+
+    # Port de l'API
+    ports:
+      - "8000:8000"
+
+    # Variables d'environnement
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MODEL_URI: models:/churn-model@champion
+
+    # Démarrer MLflow avant l'API
+    depends_on:
+      - mlflow
+
+    # Redémarrage automatique en cas d'échec
+    restart: on-failure
+
+# -----------------------------------------
+# VOLUME PERSISTANT
+# -----------------------------------------
+volumes:
+  mlflow-data:
